@@ -1,0 +1,16 @@
+# Excel logs
+*.xlsx
+
+# Environment variables
+.env
+
+# Python cache
+__pycache__/
+*.pyc
+
+# VSCode files
+.vscode/
+
+# System files
+.DS_Store
+Thumbs.db
