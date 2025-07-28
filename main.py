@@ -20,9 +20,10 @@ TOKEN = os.getenv("BOT_TOKEN")
 bot = telebot.TeleBot(TOKEN)
 
 # Excel file paths
-STUDENT_FILE = "students.xlsx"
 BOOKINGS_FILE = "bookings.xlsx"
+STUDENTS_FILE = "students.xlsx"
 CANCELLATIONS_FILE = "cancellations.xlsx"
+SUMMARY_FILE = "summary.xlsx"
 
 # Define shifts
 SHIFT_OPTIONS = {
@@ -479,7 +480,9 @@ def shift_reminder_loop():
         # Sleep 60 seconds before next check
         time.sleep(60)
 
-# Run the bot
+# Run 24/7
+from keep_alive import keep_alive
 if __name__ == "__main__":
-    print("Bot is running...")
-    bot.infinity_polling()
+    keep_alive()
+    print("Bot is running.")
+    bot.polling(non_stop=True)
