@@ -4,6 +4,8 @@ import os
 import tempfile
 
 from datetime import datetime, timedelta
+import threading
+import time
 from telebot.types import ReplyKeyboardMarkup, KeyboardButton, InputFile
 import pytz
 
@@ -33,6 +35,15 @@ SHIFT_OPTIONS = {
 # {student_id: {"name": name, "chat_id": chat_id}}
 logged_in_users = {}
 
+# Group chat notification
+GROUP_CHAT_ID = -1002635519712
+def notify_group(message_text):
+    try:
+        bot.send_message(GROUP_CHAT_ID, message_text)
+    except Exception as e:
+        print(f"[ERROR] Failed to notify group: {e}")
+
+
 # Help function to retrieve studentID properly
 # Helper to get student_id from session
 def get_student_info(student_id):
@@ -42,8 +53,9 @@ def get_student_info(student_id):
     ws = wb.active
     for row in ws.iter_rows(min_row=2, values_only=True):
         if str(row[0]) == str(student_id):
-            return row
+            return row  # Make sure it returns full row
     return None
+
 
 # Help function for writing to summary log
 def log_to_summary(action_type, student_id, name, date, shift, lic="N/A", lic_verified="N/A"):
@@ -70,12 +82,13 @@ def send_manual(chat_id):
         "*Login*: Use /start and provide your Student ID and Name.\n"
         "*Reserve*: Use /reserve to book a shift.\n"
         "*Cancel*: Use /cancel to cancel an upcoming booking.\n"
-        "*Summary*: Admins can use /summary_log to export all bookings.\n\n"
-        "*Booking Rules:*\n"
-        "• Max 4 shifts/week, 10/month (unless within 5 days).\n"
-        "• Night shifts only for eligible users (Wed/Thu).\n"
+        "*MyShifts*: Use /mybookings to view your upcoming bookings.\n"
+        "*Summary*: PODs can use /summary_log to export all bookings.\n\n"
+        "*Shift Rules:*\n"
+        "• Max 4/2 shifts/week (unless within 48 hours / 5 days).\n"
+        "• Night shifts only for selected SCs (Wed/Thu).\n"
         "• You can book Morning + Afternoon, but *not* Afternoon + Night.\n\n"
-        "If you encounter issues, please contact your admin."
+        "If you encounter issues, please drop a text in SC chat."
     )
     bot.send_message(chat_id, manual, parse_mode='Markdown')
 
@@ -99,11 +112,11 @@ def get_user_bookings(student_id):
             bookings.append({"date": datetime.strptime(date_str, "%Y-%m-%d").date(), "shift": shift})
     return bookings
 
+
 # /Manual commond handler
 @bot.message_handler(commands=['manual'])
 def manual_handler(message):
     send_manual(message.chat.id)
-
 
 # /Start commond handler
 @bot.message_handler(commands=['start'])
@@ -226,14 +239,38 @@ def finalize_booking(message, student_id, selected_date):
     if chosen_shift not in SHIFT_OPTIONS:
         bot.send_message(message.chat.id, "Invalid shift.")
         return
-
+    
     bookings = get_user_bookings(student_id)
-    week_start = selected_date - timedelta(days=selected_date.weekday())
-    weekly = sum(1 for b in bookings if week_start <= b["date"] <= week_start + timedelta(days=6))
+    student_info = get_student_info(student_id)
 
-    if weekly >= 4:
-        bot.send_message(message.chat.id, "Max 4 shifts per week.")
-        return
+    special_user = False
+    if len(student_info) > 5 and student_info[5] == 1:
+        special_user = True
+
+    week_start = selected_date - timedelta(days=selected_date.weekday())
+    week_end = week_start + timedelta(days=6)
+    now = datetime.now(pytz.timezone("Asia/Singapore"))
+
+    # Count weekly bookings (excluding bookings within leniency period)
+    weekly_bookings = [
+        b for b in bookings
+        if week_start <= b["date"] <= week_end
+    ]
+
+    # Determine leniency window
+    days_ahead = (selected_date - now.date()).days
+    within_5_days = days_ahead < 5
+    within_48_hours = (datetime.combine(selected_date, datetime.min.time()) - now).total_seconds() < 48 * 3600
+
+    if special_user:
+        if len(weekly_bookings) >= 2 and not within_48_hours:
+            bot.send_message(message.chat.id, "Max 2 shifts/week for your account (unless within 48h).")
+            return
+    else:
+        if len(weekly_bookings) >= 4 and not within_5_days:
+            bot.send_message(message.chat.id, "Max 4 shifts/week (unless within next 5 days).")
+            return
+
 
     wb = load_workbook(BOOKINGS_FILE)
     ws = wb.active
@@ -245,6 +282,9 @@ def finalize_booking(message, student_id, selected_date):
 
     bot.send_message(message.chat.id, f"Booking confirmed for {selected_date} ({chosen_shift})!")
     send_manual(message.chat.id)
+
+    # Group notification
+    notify_group(f"*Booking Confirmed!*\n {student_info[1]} ({student_info[0]})\n {selected_date.strftime('%Y-%m-%d')}\n {chosen_shift}",)
 
 # Cancel booked shift
 @bot.message_handler(commands=['cancel'])
@@ -300,6 +340,53 @@ def confirm_cancel(message, student_id, booking_map):
     bot.send_message(message.chat.id, f"Booking on {b['date']} ({b['shift']}) cancelled.")
     send_manual(message.chat.id)
 
+    # Group notification
+    notify_group(f"*Shift Cancelled!*\n {student_id} ({student_name})\n {selected_date}\n {selected_shift}")
+
+#  User booked summary
+@bot.message_handler(commands=['mybookings'])
+def my_bookings_handler(message):
+    if not is_logged_in(message.from_user.id):
+        bot.send_message(message.chat.id, "You are not logged in. Use /start to log in.")
+        return
+
+    student_id = get_student_id_from_session(message.from_user.id)
+    all_bookings = get_user_bookings(student_id)
+
+    if not all_bookings:
+        bot.send_message(message.chat.id, "You have no bookings.")
+        return
+
+    today = datetime.now(pytz.timezone("Asia/Singapore")).date()
+
+    # Filter for today and future dates
+    future_bookings = [b for b in all_bookings if b['date'] >= today]
+
+    if not future_bookings:
+        bot.send_message(message.chat.id, "You have no upcoming bookings.")
+        return
+
+    # Sort by date
+    sorted_bookings = sorted(future_bookings, key=lambda x: x['date'])
+
+    message_lines = ["*Your Upcoming Shifts:*"]
+    for b in sorted_bookings:
+        shift_time = ""
+        if b['shift'].lower() == "morning":
+            shift_time = "(9AM–12PM)"
+        elif b['shift'].lower() == "afternoon":
+            shift_time = "(2PM–6PM)"
+        elif b['shift'].lower() == "night":
+            shift_time = "(6PM–10PM)"
+        else:
+            shift_time = ""  # fallback in case of invalid entry
+
+        message_lines.append(f"• {b['date']} - {b['shift'].capitalize()} {shift_time}")
+
+    response = "\n".join(message_lines)
+    bot.send_message(message.chat.id, response, parse_mode="Markdown")
+
+
 # Only allow admin to access to summary log
 @bot.message_handler(commands=['summary_log'])
 def summary_log_handler(message):
@@ -340,6 +427,45 @@ def summary_log_handler(message):
     # Cleanup temp file
     os.remove(summary_path)
 
+def shift_reminder_loop():
+    while True:
+        now = datetime.now(pytz.timezone("Asia/Singapore"))
+        today = now.date()
+
+        # Load today's bookings
+        if not os.path.exists(BOOKINGS_FILE):
+            time.sleep(60)
+            continue
+
+        wb = load_workbook(BOOKINGS_FILE)
+        ws = wb.active
+
+        for shift_name, (start_str, _) in SHIFT_OPTIONS.items():
+            shift_start_time = datetime.strptime(start_str, "%H:%M").time()
+            shift_datetime = datetime.combine(today, shift_start_time)
+            shift_datetime = pytz.timezone("Asia/Singapore").localize(shift_datetime)
+
+            # Notify exactly 1 hour before the shift
+            time_diff = (shift_datetime - now).total_seconds()
+            if 3540 <= time_diff <= 3660:  # ~1 hour ±1 minute window
+                students_in_shift = [
+                    (row[0], row[1]) for row in ws.iter_rows(min_row=2, values_only=True)
+                    if row[2] == today.strftime("%Y-%m-%d") and row[3] == shift_name
+                ]
+
+                if students_in_shift:
+                    msg_lines = [f"*Shift Reminder: {shift_name} ({start_str})*", f"📅 *Date:* {today.strftime('%Y-%m-%d')}"]
+                    for sid, name in students_in_shift:
+                        msg_lines.append(f"👤 {name} (ID: {sid})")
+                    message = "\n".join(msg_lines)
+
+                    # Notify all logged-in users in the shift
+                    for user_id, info in logged_in_users.items():
+                        if (info["student_id"], info["name"]) in students_in_shift:
+                            bot.send_message(user_id, message, parse_mode='Markdown')
+
+        # Sleep 60 seconds before next check
+        time.sleep(60)
 
 # Run the bot
 if __name__ == "__main__":
