@@ -283,8 +283,20 @@ def finalize_booking(message, student_id, selected_date):
     bot.send_message(message.chat.id, f"Booking confirmed for {selected_date} ({chosen_shift})!")
     send_manual(message.chat.id)
 
-    # Group notification
-    notify_group(f"*Booking Confirmed!*\n {student_info[1]} ({student_info[0]})\n {selected_date.strftime('%Y-%m-%d')}\n {chosen_shift}",)
+    # Check if this shift was previously cancelled
+    rebooked_shift = False
+    if os.path.exists(CANCELLATIONS_FILE):
+        cancel_wb = load_workbook(CANCELLATIONS_FILE)
+        cancel_ws = cancel_wb.active
+        for row in cancel_ws.iter_rows(min_row=2, values_only=True):
+            if str(row[2]) == selected_date.strftime("%Y-%m-%d") and row[3] == chosen_shift:
+                rebooked_shift = True
+                break
+
+    # Only notify group if this shift was previously cancelled
+    if rebooked_shift:
+        notify_group(f"*Rebooked Shift!*\n {student_info[1]} ({student_info[0]})\n {selected_date.strftime('%Y-%m-%d')}\n {chosen_shift}")
+
 
 # Cancel booked shift
 @bot.message_handler(commands=['cancel'])
@@ -341,7 +353,7 @@ def confirm_cancel(message, student_id, booking_map):
     send_manual(message.chat.id)
 
     # Group notification
-    notify_group(f"*Shift Cancelled!*\n {student_id} ({student_name})\n {selected_date}\n {selected_shift}")
+    notify_group(f"*Shift Cancelled!*\n {student[1]} ({student[0]})\n {b['date']} - {b['shift']}")
 
 #  User booked summary
 @bot.message_handler(commands=['mybookings'])
@@ -454,9 +466,9 @@ def shift_reminder_loop():
                 ]
 
                 if students_in_shift:
-                    msg_lines = [f"*Shift Reminder: {shift_name} ({start_str})*", f"📅 *Date:* {today.strftime('%Y-%m-%d')}"]
+                    msg_lines = [f"*Shift Reminder: {shift_name} ({start_str})*", f"*Date:* {today.strftime('%Y-%m-%d')}"]
                     for sid, name in students_in_shift:
-                        msg_lines.append(f"👤 {name} (ID: {sid})")
+                        msg_lines.append(f"{name} (ID: {sid})")
                     message = "\n".join(msg_lines)
 
                     # Notify all logged-in users in the shift
