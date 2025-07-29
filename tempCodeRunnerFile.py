@@ -15,10 +15,6 @@ from openpyxl import load_workbook, Workbook
 # Load your token from environment
 from dotenv import load_dotenv
 
-import logging
-telebot.logger.setLevel(logging.DEBUG)
-
-
 # === Load Telegram token ===
 load_dotenv()
 TOKEN = os.getenv("BOT_TOKEN")
@@ -107,8 +103,8 @@ def log_to_summary(action, sid, name, date, shift):
 # Manual/help message to guide user
 def send_manual(chat_id):
     manual = ("*User Manual*\n\n"
-              "*Login*: /start\n"
-              "*Reserve*: /reserve new shift\n"
+              "*Login*: /login\n"
+              "*Reserve*: /book new shift\n"
               "*Cancel*: /cancel booked shift\n"
               "*MyShifts*: /mybookings view upcoming booked shift\n"
               "*Summary*: PODs can use /summary_log to export all bookings.\n\n"
@@ -118,7 +114,7 @@ def send_manual(chat_id):
               "• You can book Morning + Afternoon, but *not* Afternoon + Night.\n\n"
               "If you encounter issues, please drop a text in SC chat."
               )
-    bot.send_message(chat_id, manual)
+    bot.send_message(chat_id, manual, parse_mode='Markdown')
 
 def is_logged_in(uid): return uid in logged_in_users
 def get_student_id_from_session(uid): return logged_in_users.get(uid, {}).get("student_id")
@@ -192,21 +188,11 @@ def handle_date_selection(message, student_id):
     try:
         selected_date = datetime.strptime(message.text.strip(), "%Y-%m-%d").date()
         today = datetime.now(pytz.timezone("Asia/Singapore")).date()
-
-        # Determine if selected month is later than next month
-        next_month = (today.replace(day=1) + timedelta(days=32)).replace(day=1)  # first day of next month
-        selected_first_of_month = selected_date.replace(day=1)
-
-        if selected_first_of_month > next_month:
-            # Booking is for month after next
-            booking_month_start = selected_date.replace(day=1)
-            delta_days = (booking_month_start - today).days
-
-            # Get current SG time
-            sg_now = datetime.now(pytz.timezone("Asia/Singapore"))
-
-            if delta_days > 5 or (delta_days == 5 and sg_now.hour < 18):
-                bot.send_message(message.chat.id, "Booking for that month opens 5 days before 1st of the month at 6PM SG time.")
+        # Check if it's for next month, and only open 5 days in advance
+        if selected_date.month > today.month or selected_date.year > today.year:
+            delta_days = (selected_date - today).days
+            if delta_days > 5 or datetime.now(pytz.timezone("Asia/Singapore")).hour < 18:
+                bot.send_message(message.chat.id, "Next month's booking opens only 5 days before at 6PM SG time.")
                 return
 
         # Night shift check (only Wed/Thu)
@@ -295,11 +281,11 @@ def finalize_booking(message, student_id, selected_date):
     send_manual(message.chat.id)
 
     # Notify groups
-    notify_group1(f"*Booked:* {name} ({student_id}) on {selected_date} [{chosen_shift}]")
+    notify_group1(f"*Booked:* {name} ({student_id}) on {selected_date} [{chosen_shift}]", parse_mode='Markdown')
 
     # If previously cancelled
     if (selected_date.strftime("%Y-%m-%d"), chosen_shift) in cancelled_shifts:
-        notify_group2(f"*Rebooked Cancelled Shift:* {name} ({student_id}) on {selected_date} [{chosen_shift}]")
+        notify_group2(f"*Rebooked Cancelled Shift:* {name} ({student_id}) on {selected_date} [{chosen_shift}]", parse_mode='Markdown')
         cancelled_shifts.discard((selected_date.strftime("%Y-%m-%d"), chosen_shift))
 
 
@@ -365,8 +351,8 @@ def confirm_cancel(message, student_id, booking_map):
     send_manual(message.chat.id)
 
     # Notify groups
-    notify_group1(f"*Cancelled:* {name} ({student_id}) on {date_str} [{shift}]")
-    notify_group2(f"*Shift Cancelled:* {name} ({student_id}) on {date_str} [{shift}]")
+    notify_group1(f"*Cancelled:* {name} ({student_id}) on {date_str} [{shift}]", parse_mode='Markdown')
+    notify_group2(f"*Shift Cancelled:* {name} ({student_id}) on {date_str} [{shift}]", parse_mode='Markdown')
 
 
 #  User booked summary
@@ -410,7 +396,7 @@ def my_bookings_handler(message):
         message_lines.append(f"• {b['date']} - {b['shift'].capitalize()} {shift_time}")
 
     response = "\n".join(message_lines)
-    bot.send_message(message.chat.id, response)
+    bot.send_message(message.chat.id, response, parse_mode="Markdown")
 
 
 # Only allow admin to access to summary log
@@ -489,7 +475,7 @@ def shift_reminder_loop():
                     # Notify all logged-in users in the shift
                     for user_id, info in logged_in_users.items():
                         if (info["student_id"], info["name"]) in students_in_shift:
-                            bot.send_message(user_id, message)
+                            bot.send_message(user_id, message, parse_mode='Markdown')
 
         # Sleep 60 seconds before next check
         time.sleep(60)
