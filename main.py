@@ -106,16 +106,16 @@ def log_to_summary(action, sid, name, date, shift):
 # Bot manual
 # Manual/help message to guide user
 def send_manual(chat_id):
-    manual = ("*User Manual*\n\n"
-              "*Login*: /start\n"
-              "*Reserve*: /reserve new shift\n"
-              "*Cancel*: /cancel booked shift\n"
-              "*MyShifts*: /mybookings view upcoming booked shift\n"
-              "*Summary*: PODs can use /summary_log to export all bookings.\n\n"
-              "*Shift Rules:*\n"
+    manual = ("User Manual\n\n"
+              "Login: /start\n"
+              "Reserve: /reserve new shift\n"
+              "Cancel: /cancel booked shift\n"
+              "MyShifts: /mybookings view upcoming booked shift\n"
+              "Summary: PODs can use /summary_log to export all bookings.\n\n"
+              "Shift Rules:\n"
               "• Max 4/2 shifts/week (unless within 48 hours / 5 days).\n"
               "• Night shifts only for selected SCs (Wed/Thu).\n"
-              "• You can book Morning + Afternoon, but *not* Afternoon + Night.\n\n"
+              "• You can book Morning + Afternoon, but NOT Afternoon + Night.\n\n"
               "If you encounter issues, please drop a text in SC chat."
               )
     bot.send_message(chat_id, manual)
@@ -129,7 +129,7 @@ def get_user_bookings(student_id):
     ws = wb.active
     out = []
     for row in ws.iter_rows(min_row=2, values_only=True):
-        sid, _, date_str, shift = row
+        timestamp, sid, name, date_str, shift = row[:5]
         if str(sid) == str(student_id):
             out.append({"date": datetime.strptime(date_str, "%Y-%m-%d").date(), "shift": shift})
     return out
@@ -264,16 +264,25 @@ def finalize_booking(message, student_id, selected_date):
     student_info = get_student_info(student_id)
     name = student_info[1]
 
+    # Prevent double booking same date and shift
+    for b in bookings:
+        if b['date'] == selected_date and b['shift'].lower() == chosen_shift.lower():
+            bot.send_message(message.chat.id, f"You already booked {chosen_shift} shift on {selected_date}. Cannot book the same slot twice.")
+            return
+
     special_user = len(student_info) > 5 and student_info[5] == 1
 
     week_start = selected_date - timedelta(days=selected_date.weekday())
     week_end = week_start + timedelta(days=6)
-    now = datetime.now(pytz.timezone("Asia/Singapore"))
+    SG = pytz.timezone("Asia/Singapore")
+    now = datetime.now(SG)
 
     weekly_bookings = [b for b in bookings if week_start <= b["date"] <= week_end]
     days_ahead = (selected_date - now.date()).days
     within_5_days = days_ahead < 5
-    within_48_hours = (datetime.combine(selected_date, datetime.min.time()) - now).total_seconds() < 48 * 3600
+    # Make selected_date into timezone-aware datetime
+    selected_datetime = SG.localize(datetime.combine(selected_date, datetime.min.time()))
+    within_48_hours = (selected_datetime - now).total_seconds() < 48 * 3600
 
     if special_user:
         if len(weekly_bookings) >= 2 and not within_48_hours:
@@ -287,7 +296,8 @@ def finalize_booking(message, student_id, selected_date):
     # Save booking
     wb = load_workbook(BOOKINGS_FILE)
     ws = wb.active
-    ws.append([student_info[0], name, selected_date.strftime("%Y-%m-%d"), chosen_shift])
+    timestamp = datetime.now(pytz.timezone("Asia/Singapore")).strftime("%Y-%m-%d %H:%M:%S")
+    ws.append([timestamp, student_info[0], name, selected_date.strftime("%Y-%m-%d"), chosen_shift])
     wb.save(BOOKINGS_FILE)
 
     log_to_summary("BOOKED", student_info[0], name, selected_date.strftime("%Y-%m-%d"), chosen_shift)
@@ -299,7 +309,7 @@ def finalize_booking(message, student_id, selected_date):
 
     # If previously cancelled
     if (selected_date.strftime("%Y-%m-%d"), chosen_shift) in cancelled_shifts:
-        notify_group2(f"*Rebooked Cancelled Shift:* {name} ({student_id}) on {selected_date} [{chosen_shift}]")
+        notify_group2(f"Rebooked Cancelled Shift: {name} ({student_id}) on {selected_date} [{chosen_shift}]")
         cancelled_shifts.discard((selected_date.strftime("%Y-%m-%d"), chosen_shift))
 
 
@@ -365,8 +375,8 @@ def confirm_cancel(message, student_id, booking_map):
     send_manual(message.chat.id)
 
     # Notify groups
-    notify_group1(f"*Cancelled:* {name} ({student_id}) on {date_str} [{shift}]")
-    notify_group2(f"*Shift Cancelled:* {name} ({student_id}) on {date_str} [{shift}]")
+    notify_group1(f"Cancelled: {name} ({student_id}) on {date_str} [{shift}]")
+    notify_group2(f"Shift Cancelled: {name} ({student_id}) on {date_str} [{shift}]")
 
 
 #  User booked summary
@@ -395,7 +405,7 @@ def my_bookings_handler(message):
     # Sort by date
     sorted_bookings = sorted(future_bookings, key=lambda x: x['date'])
 
-    message_lines = ["*Your Upcoming Shifts:*"]
+    message_lines = ["Your Upcoming Shifts:"]
     for b in sorted_bookings:
         shift_time = ""
         if b['shift'].lower() == "morning":
